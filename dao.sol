@@ -1,7 +1,23 @@
 // SPDX-License-Identifier: MIT
 
+// referrel program - get points
+
+// adgang til kode skiller sig ud fra andre
+// central sted hvor kun crypto wallets har adgang til koden
+// wallet 
+
+
+// non member can betale for brug af software uden adgagn ti lsource kode
+
+
+/// stem pa eget forslag giver points ?
+
 pragma solidity ^0.8.0;
 
+/**
+ * @author Oliver Elleman Thomsen
+ * 
+ */
 contract DAO {
     struct Proposal {
         uint id;
@@ -12,7 +28,7 @@ contract DAO {
         uint yesVotes;
         uint noVotes;
         uint numMembersVoted;
-        bool completed;
+        bool completed; // approved
         bool exists;
     }
 
@@ -23,22 +39,22 @@ contract DAO {
         uint buyIn;
     }
 
-    uint8 private quorum; // minimum percentage of people requiret to participate in vote
+    uint8 public quorum; // minimum percentage of people requiret to participate in vote
     uint public minBuyIn; // the minimum price to join the DAO
-    uint private voteTime; // period of time where it is possiple to vote on a proposal
-    uint private votingReward; // the amount of points a member is rewarded for participating in a vote
-    uint private monthlyContribution; // the price you must pay every month to stay a member
+    uint public voteTime; // period of time where it is possiple to vote on a proposal
+    uint public votingReward; // the amount of points a member is rewarded for participating in a vote
+    uint public monthlyContribution; // the price you must pay every month to stay a member
     address public creator;
     
     uint public latestProposalId = 0;
-    uint private numberOfMembers = 0;
+    uint public numberOfMembers = 0;
 
     mapping(address => bool) public members;
     mapping(address => uint) public memberPoints;
     mapping(address => uint) public fundsToWithdraw;
     mapping(uint => Proposal) public proposals;
-    mapping(address => JoinRequest) private joinRequests;
-    mapping(address => mapping(uint => bool)) private memberVotedOnProposal;
+    mapping(address => JoinRequest) public joinRequests;
+    mapping(address => mapping(uint => bool)) public memberVotedOnProposal;
 
     // todo add events ...
 
@@ -54,8 +70,8 @@ contract DAO {
     }
 
 
-    constructor(uint _minBuyIn, uint _monthlyContribution, uint8 _quorum, uint _voteTime, uint _votingReward) payable {
-        require(_quorum > 0 && _quorum < 100, 'Quorum must be between 0 and 100');
+    constructor(uint _minBuyIn, uint _monthlyContribution,  uint _votingReward, uint8 _quorum, uint _voteTime) payable {
+        require(_quorum > 0 && _quorum <= 100, 'Quorum must be between 0 and 100');
         creator = msg.sender;
         minBuyIn = _minBuyIn;
         monthlyContribution = _monthlyContribution;
@@ -80,7 +96,9 @@ contract DAO {
     }
 
 
-    // Maybe add voting on new members...
+    // Approve a request to join the DAO
+    // When a request is approved, the requester can call the join function to officially join the DAO
+    // Maybe add voting a protocol to the approve new members
     function approveJoinRequest(address newMember) external onlyMembers {
         require(joinRequests[newMember].send == true, 'This address has not send a join request');
         require(members[newMember] == false, 'Address is already a member');
@@ -99,6 +117,8 @@ contract DAO {
         numberOfMembers += 1; // lookup what actually happens 
     }
 
+    // Leave the DAO, stop spending monthly membership fee
+    // Loose access to source code
     function leave() external onlyMembers {
         delete members[msg.sender];
         numberOfMembers -= 1;
@@ -155,6 +175,11 @@ contract DAO {
         payable(msg.sender).transfer(amount);
     }
 
+    // propose vote to change global params
+    function changeGlobalValues(uint _minBuyIn, uint _monthlyContribution,  uint _votingReward, uint8 _quorum, uint _voteTime) external {
+
+    }
+    
     function getBalance() external view returns(uint) {
         return address(this).balance;
     }
