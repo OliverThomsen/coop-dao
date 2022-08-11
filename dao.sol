@@ -140,7 +140,8 @@ contract DAO {
         Proposal storage proposal = proposals[id];
         require(proposal.endTime <= block.timestamp, 'Voting peroid is not over');
         require(proposal.completed == false, 'Proposal already completed');
-        require(proposal.numMembersVoted / numberOfMembers * 100 >= quorum, 'Not enough members participated in the vote');
+        // multiply with 100 before dividing to avoid rounding error
+        require((proposal.numMembersVoted  * 100) / numberOfMembers >= quorum, 'Not enough members participated in the vote');
         require(proposal.yesVotes >= proposal.noVotes, 'Proposal did not pass vote');
         require(proposal.amount <= address(this).balance, 'Not enough funds to complete proposal');
         proposals[id].completed = true;
