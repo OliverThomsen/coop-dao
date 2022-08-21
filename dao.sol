@@ -19,6 +19,44 @@ pragma solidity ^0.8.0;
  * 
  */
 contract DAO {
+
+    // CONSTANTS
+    uint private constant MONTH_IN_SECONDS = 2629800; // (365.25 / 12 * 24 * 60 * 60)
+
+    // CONFIGURATION ATTRIBUTES
+    uint8 public quorum; // minimum percentage of people requiret to participate in vote
+    uint public minBuyIn; // the minimum price to join the DAO
+    uint public voteTime; // period of time in seconds where it is possiple to vote on a proposal
+    uint public votingReward; // the amount of points a member is rewarded for participating in a vote
+    uint public monthlyContribution; // the price you must pay every month to stay a member
+    
+    address public creator;
+    uint public latestProposalId = 0;
+    uint public numberOfMembers = 0;
+
+    mapping(address => Member) public members;
+    mapping(address => uint) public fundsToWithdraw;
+   
+    mapping(uint => Proposal) public proposals;
+    mapping(uint => SpendingProposal) public spendingProposals;
+    mapping(uint => ConfigurationProposal) public configurationProposals;
+    mapping(address => mapping(uint => bool)) public memberVotedOnProposal; // memberAddress => proposalId => hasVoted
+
+    mapping(address => JoinRequest) public joinRequests;
+    mapping(address => mapping(address => bool)) public memberApprovedRequest; // requestApprovedByMember; // memberAddress => requesterAddress => hasApproved
+
+    // EVENTS
+    event NewJoinRequest(address from);
+    event NewMember(address member);
+    event NewProposal(Proposal proposal);
+    event ProposalRealized(uint proposalId);
+
+    struct Member {
+        uint points;
+        uint lastPaymentTime;
+        bool exists;
+    }
+
     struct Proposal {
         uint id;
         address proposer;
@@ -54,48 +92,20 @@ contract DAO {
         uint approvals;
     }
 
-   
-
-    // Configuration attributes
-    uint8 public quorum; // minimum percentage of people requiret to participate in vote
-    uint public minBuyIn; // the minimum price to join the DAO
-    uint public voteTime; // period of time in seconds where it is possiple to vote on a proposal
-    uint public votingReward; // the amount of points a member is rewarded for participating in a vote
-    uint public monthlyContribution; // the price you must pay every month to stay a member
-    
-    address public creator;
-    uint public latestProposalId = 0;
-    uint public numberOfMembers = 0;
-
-    // todo collect member attributes in a struct
-
-    mapping(address => bool) public members;
-    mapping(address => uint) public memberPoints;
-    mapping(address => uint) public fundsToWithdraw;
-   
-    mapping(uint => Proposal) public proposals;
-    mapping(uint => SpendingProposal) public spendingProposals;
-    mapping(uint => ConfigurationProposal) public configurationProposals;
-
-    mapping(address => JoinRequest) public joinRequests;
-    mapping(address => mapping(uint => bool)) public memberVotedOnProposal; // memberAddress => proposalId => hasVoted
-    mapping(address => mapping(address => bool)) public memberApprovedRequest; // requestApprovedByMember; // memberAddress => requesterAddress => hasApproved
-
-
-    // Events
-    event NewJoinRequest(address from);
-    event NewMember(address member);
-    event NewProposal(Proposal proposal);
-    event ProposalRealized(uint proposalId);
-
 
     modifier onlyMembers {
-        require(members[msg.sender] == true, "Only members can call this function");
-        _; // function body is executed here
+        require(members[msg.sender].exists == true, "Only members can call this function");
+        _;
+    }
+
+    modifier onlyActiveMembers {
+        require(members[msg.sender].exists == true, "Only members can call this function");
+        require(isActive(msg.sender) == true, "Only active members can call this function");
+        _;
     }
 
     modifier onlyNonMembers {
-        require(members[msg.sender] == false, "Only non members can call this function");
+        require(members[msg.sender].exists == false, "Only non members can call this function");
         _;
     }
 
@@ -108,13 +118,16 @@ contract DAO {
         quorum = _quorum;
         voteTime = _voteTime;
         votingReward = _votingReward;
-        members[msg.sender] = true;
-        memberPoints[msg.sender] = msg.value;
+        members[msg.sender] = Member({
+            points: msg.value,
+            lastPaymentTime: getNextPaymentTime(),
+            exists: true
+        });
         numberOfMembers += 1;
     }
 
     function fund() external payable onlyMembers {
-        memberPoints[msg.sender] += msg.value;
+        members[msg.sender].points += msg.value;
     }
 
     // Send a request to join the DAO 
@@ -135,7 +148,7 @@ contract DAO {
     // Approve a request to join the DAO
     // When a request is approved, the requester can call the join function to officially join the DAO
     // Maybe add a voting protocol to the approve new members
-    function approveJoinRequest(address requester) external onlyMembers {
+    function approveJoinRequest(address requester) external onlyActiveMembers {
         require(joinRequests[requester].send == true, "This address has not send a join request");
         require(memberApprovedRequest[msg.sender][requester] == false, "You have already approved this join request");
         memberApprovedRequest[msg.sender][requester] = true;
@@ -148,8 +161,11 @@ contract DAO {
         require(joinRequests[msg.sender].approvals * 100 >= quorum * numberOfMembers, "Your request to join has not been approved by enough members");
         require(msg.value == joinRequests[msg.sender].buyIn, "Value must be the same as buyIn in the joinRequest");
         delete joinRequests[msg.sender]; // delete sets all values in the srtuct to their default value
-        members[msg.sender] = true;
-        memberPoints[msg.sender] += msg.value; // get points equivalent to amount of ETH 
+        members[msg.sender] = Member({
+            points: msg.value,
+            lastPaymentTime: getNextPaymentTime(),
+            exists: true
+        });
         numberOfMembers += 1; // lookup what actually happens 
         emit NewMember(msg.sender);
     }
@@ -163,7 +179,7 @@ contract DAO {
     }
 
     // Propose to spend money
-    function createSpedingProposal(uint amount, address payable recipient, string memory name) external onlyMembers {
+    function createSpedingProposal(uint amount, address payable recipient, string memory name) external onlyActiveMembers {
         require(address(this).balance >= amount, "Not enough funds");
         SpendingProposal memory spendingProposal = SpendingProposal({
             name: name,
@@ -177,7 +193,7 @@ contract DAO {
     }
 
     // propose vote to change global params
-    function createConfigurationProposal(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _monthlyContribution) external onlyMembers {
+    function createConfigurationProposal(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _monthlyContribution) external onlyActiveMembers {
         ConfigurationProposal memory configurationProposal = ConfigurationProposal({
             quorum: _quorum,
             minBuyIn: _minBuyIn,
@@ -190,7 +206,7 @@ contract DAO {
         createProposal(emptySpendingProposal, configurationProposal);
     }
 
-    function createProposal(SpendingProposal memory sp, ConfigurationProposal memory cp) internal onlyMembers {
+    function createProposal(SpendingProposal memory sp, ConfigurationProposal memory cp) internal onlyActiveMembers {
         latestProposalId += 1;
         proposals[latestProposalId] = Proposal({
             id: latestProposalId,
@@ -208,31 +224,37 @@ contract DAO {
 
     // Vote on a proposal and get rewarded with points
     // maybe proof 
-    function vote(uint proposalId, bool votingYes) external onlyMembers {
-        require(proposalId <= latestProposalId, "No proposal exists with this id");
+    function vote(uint proposalId, bool votingYes) external onlyActiveMembers {
+        require(proposalId <= latestProposalId && proposalId > 0, "No proposal exists with this id");
         require(proposals[proposalId].endTime > block.timestamp, "Voting period has ended");
         require(memberVotedOnProposal[msg.sender][proposalId] == false, "You have already voted once");
         require(proposals[proposalId].proposer != msg.sender, "You cannot vote on your own proposal");
         memberVotedOnProposal[msg.sender][proposalId] = true;
         // Quadratic voting: take square root of points to make it harder to buy power
-        uint weightedVote = sqrt(memberPoints[msg.sender]);
+        uint weightedVote = sqrt(members[msg.sender].points);
         if (votingYes) {
             proposals[proposalId].yesVotes = weightedVote;
         } else {
             proposals[proposalId].noVotes = weightedVote;
         }
         proposals[proposalId].numMembersVoted += 1;
-        memberPoints[msg.sender] += votingReward;
+        // Award points for voting, if not own proposal
+        if (proposals[proposalId].proposer != msg.sender) {
+            members[msg.sender].points += votingReward;
+        }
     }
 
     // TODO 
     function payMonthlyContribution() external payable onlyMembers {
-        memberPoints[msg.sender] += msg.value;  // get points equivalent to amount of ETH
-        // TODO update active status (or check date of last contribution)
+        uint monthsToPay = (getNextPaymentTime() - members[msg.sender].lastPaymentTime) / MONTH_IN_SECONDS;
+        require(monthsToPay == 0, "You have already payed for this month");
+        require(msg.value == monthlyContribution * monthsToPay, "Value does not equal required monthly contrubution");
+        members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
+        members[msg.sender].lastPaymentTime = getNextPaymentTime();
     }
 
-    function realizeProposal(uint id) external onlyMembers {
-        require(id <= latestProposalId, "No proposal exists with this id");
+    function realizeProposal(uint id) external onlyActiveMembers {
+        require(id <= latestProposalId && id > 0, "No proposal exists with this id");
         require(proposals[id].endTime <= block.timestamp, "Voting peroid is not over");
         require(proposals[id].realized == false, "Proposal already realized");
         // multiply with 100 before dividing to avoid rounding error
@@ -251,7 +273,7 @@ contract DAO {
         emit ProposalRealized(id);
     }
 
-    function updateConfigurations(uint proposalId) internal onlyMembers {
+    function updateConfigurations(uint proposalId) internal onlyActiveMembers {
         ConfigurationProposal storage proposal = proposals[proposalId].configurationProposal;
         quorum = proposal.quorum;
         minBuyIn = proposal.minBuyIn;
@@ -260,9 +282,11 @@ contract DAO {
         monthlyContribution = proposal.monthlyContribution;
     }
 
-    // TODO impliment
-    function getTimeLeftOnProposal(uint proposalId) public view {
-
+    // Returns time left on proposal in seconds
+    function getTimeLeftOnProposal(uint id) public view returns(uint) {
+        require(id <= latestProposalId && id > 0, "No proposal exists with this id");
+        uint endTime = proposals[id].endTime;
+        return endTime - block.timestamp;
     } 
 
     function widthdrawFunds() external {
@@ -271,6 +295,19 @@ contract DAO {
         // resetting funds before transfering to prevent reentrancy attack
         fundsToWithdraw[msg.sender] = 0;
         payable(msg.sender).transfer(amount);
+    }
+
+    function isActive(address memberAddress) internal view returns(bool) {
+        return members[memberAddress].lastPaymentTime == getNextPaymentTime();
+    }
+
+    function getNextPaymentTime() public view returns(uint) {
+        uint timeSinceLastPayment = block.timestamp % MONTH_IN_SECONDS;
+        if (timeSinceLastPayment == 0) {
+            return block.timestamp;
+        } else {
+            return block.timestamp + MONTH_IN_SECONDS - timeSinceLastPayment;
+        }
     }
 
     function getBalance() external view returns(uint) {
