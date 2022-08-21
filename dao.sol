@@ -20,15 +20,13 @@ pragma solidity ^0.8.0;
  */
 contract DAO {
 
-    // CONSTANTS
-    uint private constant MONTH_IN_SECONDS = 2629800; // (365.25 / 12 * 24 * 60 * 60)
-
     // CONFIGURATION ATTRIBUTES
     uint8 public quorum; // minimum percentage of people requiret to participate in vote
     uint public minBuyIn; // the minimum price to join the DAO
     uint public voteTime; // period of time in seconds where it is possiple to vote on a proposal
     uint public votingReward; // the amount of points a member is rewarded for participating in a vote
-    uint public monthlyContribution; // the price you must pay every month to stay a member
+    uint public periodicalContirbution; // the price you must pay every period to stay a member
+    uint public periodLength; // Amount of time between mandatory payments
     
     address public creator;
     uint public latestProposalId = 0;
@@ -53,7 +51,7 @@ contract DAO {
 
     struct Member {
         uint points;
-        uint lastPaymentTime;
+        uint lastPayedDeadline;
         bool exists;
     }
 
@@ -81,7 +79,8 @@ contract DAO {
         uint minBuyIn;
         uint voteTime;
         uint votingReward;
-        uint monthlyContribution;
+        uint periodicalContirbution;
+        uint periodLength;
         bool exists;
     }
 
@@ -110,17 +109,18 @@ contract DAO {
     }
 
 
-    constructor(uint _minBuyIn, uint _monthlyContribution,  uint _votingReward, uint8 _quorum, uint _voteTime) payable {
+    constructor(uint _minBuyIn, uint _periodicalContirbution, uint _periodLength,  uint _votingReward, uint8 _quorum, uint _voteTime) payable {
         require(_quorum > 0 && _quorum <= 100, "Quorum must be between 0 and 100");
         creator = msg.sender;
         minBuyIn = _minBuyIn;
-        monthlyContribution = _monthlyContribution;
+        periodicalContirbution = _periodicalContirbution;
         quorum = _quorum;
         voteTime = _voteTime;
         votingReward = _votingReward;
+        periodLength = _periodLength;
         members[msg.sender] = Member({
             points: msg.value,
-            lastPaymentTime: getNextPaymentTime(),
+            lastPayedDeadline: nextPaymentDeadline(),
             exists: true
         });
         numberOfMembers += 1;
@@ -163,14 +163,14 @@ contract DAO {
         delete joinRequests[msg.sender]; // delete sets all values in the srtuct to their default value
         members[msg.sender] = Member({
             points: msg.value,
-            lastPaymentTime: getNextPaymentTime(),
+            lastPayedDeadline: nextPaymentDeadline(),
             exists: true
         });
         numberOfMembers += 1; // lookup what actually happens 
         emit NewMember(msg.sender);
     }
 
-    // Leave the DAO, stop spending monthly membership fee
+    // Leave the DAO, stop paying periodical contirbution membership fee
     // Loose access to source code
     // TODO
     function leave() external onlyMembers {
@@ -179,7 +179,7 @@ contract DAO {
     }
 
     // Propose to spend money
-    function createSpedingProposal(uint amount, address payable recipient, string memory name) external onlyActiveMembers {
+    function ProposeSpending(uint amount, address payable recipient, string memory name) external onlyActiveMembers {
         require(address(this).balance >= amount, "Not enough funds");
         SpendingProposal memory spendingProposal = SpendingProposal({
             name: name,
@@ -193,13 +193,14 @@ contract DAO {
     }
 
     // propose vote to change global params
-    function createConfigurationProposal(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _monthlyContribution) external onlyActiveMembers {
+    function ProposeConfigurationUpdate(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _periodicalContirbution, uint _periodLength) external onlyActiveMembers {
         ConfigurationProposal memory configurationProposal = ConfigurationProposal({
             quorum: _quorum,
             minBuyIn: _minBuyIn,
             voteTime: _voteTime,
             votingReward: _votingReward,
-            monthlyContribution: _monthlyContribution,
+            periodicalContirbution: _periodicalContirbution,
+            periodLength: _periodLength,
             exists: true
         });
         SpendingProposal memory emptySpendingProposal;
@@ -244,21 +245,19 @@ contract DAO {
         }
     }
 
-    // TODO 
-    function payMonthlyContribution() external payable onlyMembers {
-        uint monthsToPay = (getNextPaymentTime() - members[msg.sender].lastPaymentTime) / MONTH_IN_SECONDS;
-        require(monthsToPay == 0, "You have already payed for this month");
-        require(msg.value == monthlyContribution * monthsToPay, "Value does not equal required monthly contrubution");
+    function payPeriodicalContribution() external payable onlyMembers {
+        uint periodsToPay = (nextPaymentDeadline() - members[msg.sender].lastPayedDeadline) / periodLength;
+        require(periodsToPay == 0, "You have already payed for this period");
+        require(msg.value == periodicalContirbution * periodsToPay, "Value does not equal required period contrubution");
         members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
-        members[msg.sender].lastPaymentTime = getNextPaymentTime();
+        members[msg.sender].lastPayedDeadline = nextPaymentDeadline();
     }
 
     function realizeProposal(uint id) external onlyActiveMembers {
         require(id <= latestProposalId && id > 0, "No proposal exists with this id");
         require(proposals[id].endTime <= block.timestamp, "Voting peroid is not over");
         require(proposals[id].realized == false, "Proposal already realized");
-        // multiply with 100 before dividing to avoid rounding error
-        require((proposals[id].numMembersVoted  * 100) / numberOfMembers >= quorum, "Not enough members participated in the vote");
+        require((proposals[id].numMembersVoted  * 100) / numberOfMembers >= quorum, "Not enough members participated in the vote"); // multiply with 100 before dividing to avoid rounding error
         require(proposals[id].yesVotes >= proposals[id].noVotes, "Proposal did not pass vote");
         require(proposals[id].spendingProposal.amount <= address(this).balance, "Not enough funds to complete proposal");
     
@@ -279,7 +278,8 @@ contract DAO {
         minBuyIn = proposal.minBuyIn;
         voteTime = proposal.voteTime;
         votingReward = proposal.votingReward;
-        monthlyContribution = proposal.monthlyContribution;
+        periodicalContirbution = proposal.periodicalContirbution;
+        periodLength = proposal.periodLength;
     }
 
     // Returns time left on proposal in seconds
@@ -298,15 +298,15 @@ contract DAO {
     }
 
     function isActive(address memberAddress) internal view returns(bool) {
-        return members[memberAddress].lastPaymentTime == getNextPaymentTime();
+        return members[memberAddress].lastPayedDeadline + periodLength > block.timestamp;
     }
 
-    function getNextPaymentTime() public view returns(uint) {
-        uint timeSinceLastPayment = block.timestamp % MONTH_IN_SECONDS;
+    function nextPaymentDeadline() public view returns(uint) {
+        uint timeSinceLastPayment = block.timestamp % periodLength;
         if (timeSinceLastPayment == 0) {
             return block.timestamp;
         } else {
-            return block.timestamp + MONTH_IN_SECONDS - timeSinceLastPayment;
+            return block.timestamp + periodLength - timeSinceLastPayment;
         }
     }
 
