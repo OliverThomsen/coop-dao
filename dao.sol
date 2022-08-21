@@ -25,7 +25,7 @@ contract DAO {
     uint public minBuyIn; // the minimum price to join the DAO
     uint public voteTime; // period of time in seconds where it is possiple to vote on a proposal
     uint public votingReward; // the amount of points a member is rewarded for participating in a vote
-    uint public periodicalContirbution; // the price you must pay every period to stay a member
+    uint public periodFee; // the price you must pay every period to stay a member
     uint public periodLength; // Amount of time between mandatory payments
     
     address public creator;
@@ -79,7 +79,7 @@ contract DAO {
         uint minBuyIn;
         uint voteTime;
         uint votingReward;
-        uint periodicalContirbution;
+        uint periodFee;
         uint periodLength;
         bool exists;
     }
@@ -109,11 +109,11 @@ contract DAO {
     }
 
 
-    constructor(uint _minBuyIn, uint _periodicalContirbution, uint _periodLength,  uint _votingReward, uint8 _quorum, uint _voteTime) payable {
+    constructor(uint _minBuyIn, uint _periodFee, uint _periodLength,  uint _votingReward, uint8 _quorum, uint _voteTime) payable {
         require(_quorum > 0 && _quorum <= 100, "Quorum must be between 0 and 100");
         creator = msg.sender;
         minBuyIn = _minBuyIn;
-        periodicalContirbution = _periodicalContirbution;
+        periodFee = _periodFee;
         quorum = _quorum;
         voteTime = _voteTime;
         votingReward = _votingReward;
@@ -193,13 +193,13 @@ contract DAO {
     }
 
     // propose vote to change global params
-    function ProposeConfigurationUpdate(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _periodicalContirbution, uint _periodLength) external onlyActiveMembers {
+    function ProposeConfigurationUpdate(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _periodFee, uint _periodLength) external onlyActiveMembers {
         ConfigurationProposal memory configurationProposal = ConfigurationProposal({
             quorum: _quorum,
             minBuyIn: _minBuyIn,
             voteTime: _voteTime,
             votingReward: _votingReward,
-            periodicalContirbution: _periodicalContirbution,
+            periodFee: _periodFee,
             periodLength: _periodLength,
             exists: true
         });
@@ -245,10 +245,10 @@ contract DAO {
         }
     }
 
-    function payPeriodicalContribution() external payable onlyMembers {
+    function payPeriodFee() external payable onlyMembers {
         uint periodsToPay = (nextPaymentDeadline() - members[msg.sender].lastPayedDeadline) / periodLength;
         require(periodsToPay == 0, "You have already payed for this period");
-        require(msg.value == periodicalContirbution * periodsToPay, "Value does not equal required period contrubution");
+        require(msg.value == periodFee * periodsToPay, "Value does not equal required period fee");
         members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
         members[msg.sender].lastPayedDeadline = nextPaymentDeadline();
     }
@@ -278,7 +278,7 @@ contract DAO {
         minBuyIn = proposal.minBuyIn;
         voteTime = proposal.voteTime;
         votingReward = proposal.votingReward;
-        periodicalContirbution = proposal.periodicalContirbution;
+        periodFee = proposal.periodFee;
         periodLength = proposal.periodLength;
     }
 
