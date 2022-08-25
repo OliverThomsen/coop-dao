@@ -1,17 +1,4 @@
 // SPDX-License-Identifier: MIT
-
-// referrel program - get points
-
-// adgang til kode skiller sig ud fra andre
-// central sted hvor kun crypto wallets har adgang til koden
-// wallet 
-
-
-// non member kan betale for brug af software uden adgagn til source kode
-
-
-/// stem pa eget forslag giver points ?
-
 pragma solidity ^0.8.0;
 
 /**
@@ -21,7 +8,7 @@ pragma solidity ^0.8.0;
 contract DAO {
 
     // CONFIGURATION ATTRIBUTES
-    uint8 public quorum; // minimum percentage of people requiret to participate in vote
+    uint8 public quorum; // minimum percentage of members requiret to participate in vote // TODO change to active members
     uint public minBuyIn; // the minimum price to join the DAO
     uint public voteTime; // period of time in seconds where it is possiple to vote on a proposal
     uint public votingReward; // the amount of points a member is rewarded for participating in a vote
@@ -32,6 +19,7 @@ contract DAO {
     uint public latestProposalId = 0;
     uint public numberOfMembers = 0;
 
+    // TODO make array of member addresse, to easily find all active members
     mapping(address => Member) public members;
     mapping(address => uint) public fundsToWithdraw;
    
@@ -147,7 +135,6 @@ contract DAO {
 
     // Approve a request to join the DAO
     // When a request is approved, the requester can call the join function to officially join the DAO
-    // Maybe add a voting protocol to the approve new members
     function approveJoinRequest(address requester) external onlyActiveMembers {
         require(joinRequests[requester].send == true, "This address has not send a join request");
         require(memberApprovedRequest[msg.sender][requester] == false, "You have already approved this join request");
@@ -172,7 +159,6 @@ contract DAO {
 
     // Leave the DAO, stop paying periodical contirbution membership fee
     // Loose access to source code
-    // TODO
     function leave() external onlyMembers {
         delete members[msg.sender];
         numberOfMembers -= 1;
