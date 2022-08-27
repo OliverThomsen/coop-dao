@@ -57,15 +57,14 @@ def test_deploy(creator):
     assert voting_reward == dao.votingReward()
     assert quorum == dao.quorum()
     assert vote_time == dao.voteTime()
-    assert creator == dao.creator()
     assert value == dao.getBalance()
     member_exists = dao.members(creator)[2]
     member_points = dao.members(creator)[0]
     member_last_payed_deadline = dao.members(creator)[1]
     assert member_exists == True
     assert member_points == value
-    assert member_last_payed_deadline == dao.nextPaymentDeadline()
-    assert dao.numberOfMembers() == 1
+    assert member_last_payed_deadline == dao.nextPeriodStart()
+    assert dao.memberCount() == 1
     
 
 ############
@@ -77,7 +76,7 @@ def test_join_dao(dao, creator):
     new_member = accounts[1]
     join_fee = 1 * 10**18
     initial_balance = dao.getBalance()
-    initial_members = dao.numberOfMembers()
+    initial_members = dao.memberCount()
 
     # Act 
     dao.requestToJoin(join_fee, {'from': new_member})
@@ -90,9 +89,9 @@ def test_join_dao(dao, creator):
     member_last_payed_deadline = dao.members(new_member)[1]
     assert member_exists == True
     assert member_points == join_fee
-    assert member_last_payed_deadline == dao.nextPaymentDeadline()
+    assert member_last_payed_deadline == dao.nextPeriodStart()
     assert initial_balance + join_fee == dao.getBalance()
-    assert initial_members + 1 == dao.numberOfMembers()
+    assert initial_members + 1 == dao.memberCount()
 
 def test_join_before_request(dao, mallory):
     with pytest.raises(exceptions.VirtualMachineError):

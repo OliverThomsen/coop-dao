@@ -7,31 +7,32 @@ pragma solidity ^0.8.0;
  */
 contract DAO {
 
-    // CONFIGURATION ATTRIBUTES
-    uint8 public quorum; // minimum percentage of members requiret to participate in vote // TODO change to active members
+    // Configuration attributes
+    uint8 public quorum; // minimum percentage of members requiret to participate in vote
     uint public minBuyIn; // the minimum price to join the DAO
     uint public voteTime; // period of time in seconds where it is possiple to vote on a proposal
     uint public votingReward; // the amount of points a member is rewarded for participating in a vote
     uint public periodFee; // the price you must pay every period to stay a member
     uint public periodLength; // Amount of time between mandatory payments
-    
-    address public creator;
-    uint public latestProposalId = 0;
-    uint public numberOfMembers = 0;
 
-    // TODO make array of member addresse, to easily find all active members
+    // Members
+    uint public memberCount = 0;
     mapping(address => Member) public members;
-    mapping(address => uint) public fundsToWithdraw;
+    mapping(uint => uint) public activeMembersInPeriod; // timestamp => activeMembers
    
+    // Proposals
+    uint public proposalCount = 0;
     mapping(uint => Proposal) public proposals;
     mapping(uint => SpendingProposal) public spendingProposals;
-    mapping(uint => ConfigurationProposal) public configurationProposals;
+    mapping(uint => ConfigProposal) public configProposals;
     mapping(address => mapping(uint => bool)) public memberVotedOnProposal; // memberAddress => proposalId => hasVoted
+    mapping(address => uint) public fundsToWithdraw;
 
+    // Join requests
     mapping(address => JoinRequest) public joinRequests;
-    mapping(address => mapping(address => bool)) public memberApprovedRequest; // requestApprovedByMember; // memberAddress => requesterAddress => hasApproved
+    mapping(address => mapping(address => bool)) public memberApprovedRequest; // memberAddress => requesterAddress => hasApproved
 
-    // EVENTS
+    // Events
     event NewJoinRequest(address from);
     event NewMember(address member);
     event NewProposal(Proposal proposal);
@@ -39,12 +40,11 @@ contract DAO {
 
     struct Member {
         uint points;
-        uint lastPayedDeadline;
+        uint lastPayedPeriod;
         bool exists;
     }
 
     struct Proposal {
-        uint id;
         address proposer;
         uint endTime;
         uint yesVotes;
@@ -52,7 +52,7 @@ contract DAO {
         uint numMembersVoted;
         bool realized;
         SpendingProposal spendingProposal;
-        ConfigurationProposal configurationProposal;
+        ConfigProposal configProposal;
     }
 
     struct SpendingProposal {
@@ -62,7 +62,7 @@ contract DAO {
         bool exists;
     }
 
-    struct ConfigurationProposal {
+    struct ConfigProposal {
         uint8 quorum;
         uint minBuyIn;
         uint voteTime;
@@ -99,19 +99,24 @@ contract DAO {
 
     constructor(uint _minBuyIn, uint _periodFee, uint _periodLength,  uint _votingReward, uint8 _quorum, uint _voteTime) payable {
         require(_quorum > 0 && _quorum <= 100, "Quorum must be between 0 and 100");
-        creator = msg.sender;
         minBuyIn = _minBuyIn;
         periodFee = _periodFee;
         quorum = _quorum;
         voteTime = _voteTime;
         votingReward = _votingReward;
         periodLength = _periodLength;
+
+        uint nextPeriod = nextPeriodStart();
         members[msg.sender] = Member({
             points: msg.value,
-            lastPayedDeadline: nextPaymentDeadline(),
+            lastPayedPeriod: nextPeriod,
             exists: true
         });
-        numberOfMembers += 1;
+        memberCount += 1;
+        // Set as active member in current period and next period
+        activeMembersInPeriod[nextPeriod - periodLength] += 1;
+        activeMembersInPeriod[nextPeriod] += 1;
+
     }
 
     function fund() external payable onlyMembers {
@@ -135,6 +140,7 @@ contract DAO {
 
     // Approve a request to join the DAO
     // When a request is approved, the requester can call the join function to officially join the DAO
+    // TODO: Quadratic voting on new members?
     function approveJoinRequest(address requester) external onlyActiveMembers {
         require(joinRequests[requester].send == true, "This address has not send a join request");
         require(memberApprovedRequest[msg.sender][requester] == false, "You have already approved this join request");
@@ -145,24 +151,24 @@ contract DAO {
     // msg.value is in the unit Wei. 1 Ether = 10^18 Wei
     function join() payable external onlyNonMembers {
         require(joinRequests[msg.sender].send == true, "You need to send a join request before you can join");
-        require(joinRequests[msg.sender].approvals * 100 >= quorum * numberOfMembers, "Your request to join has not been approved by enough members");
+        uint currentPeriod = nextPeriodStart() - periodLength;
+        uint activeMembers = activeMembersInPeriod[currentPeriod];
+        require(joinRequests[msg.sender].approvals * 100 >= quorum * activeMembers, "Your request to join has not been approved by enough active members");
         require(msg.value == joinRequests[msg.sender].buyIn, "Value must be the same as buyIn in the joinRequest");
         delete joinRequests[msg.sender]; // delete sets all values in the srtuct to their default value
+        uint nextPeriod = nextPeriodStart();
         members[msg.sender] = Member({
             points: msg.value,
-            lastPayedDeadline: nextPaymentDeadline(),
+            lastPayedPeriod: nextPeriod,
             exists: true
         });
-        numberOfMembers += 1; // lookup what actually happens 
+        memberCount += 1;
+        // Set as active member in current period and next period
+        activeMembersInPeriod[nextPeriod - periodLength] += 1;
+        activeMembersInPeriod[nextPeriod] += 1;
         emit NewMember(msg.sender);
     }
 
-    // Leave the DAO, stop paying periodical contirbution membership fee
-    // Loose access to source code
-    function leave() external onlyMembers {
-        delete members[msg.sender];
-        numberOfMembers -= 1;
-    }
 
     // Propose to spend money
     function ProposeSpending(uint amount, address payable recipient, string memory name) external onlyActiveMembers {
@@ -174,13 +180,13 @@ contract DAO {
             exists: true
 
         });
-        ConfigurationProposal memory emptyConfigProposal;
+        ConfigProposal memory emptyConfigProposal;
         createProposal(spendingProposal, emptyConfigProposal);
     }
 
     // propose vote to change global params
     function ProposeConfigurationUpdate(uint8 _quorum, uint _minBuyIn, uint _voteTime,  uint _votingReward, uint _periodFee, uint _periodLength) external onlyActiveMembers {
-        ConfigurationProposal memory configurationProposal = ConfigurationProposal({
+        ConfigProposal memory configProposal = ConfigProposal({
             quorum: _quorum,
             minBuyIn: _minBuyIn,
             voteTime: _voteTime,
@@ -190,13 +196,11 @@ contract DAO {
             exists: true
         });
         SpendingProposal memory emptySpendingProposal;
-        createProposal(emptySpendingProposal, configurationProposal);
+        createProposal(emptySpendingProposal, configProposal);
     }
 
-    function createProposal(SpendingProposal memory sp, ConfigurationProposal memory cp) internal onlyActiveMembers {
-        latestProposalId += 1;
-        proposals[latestProposalId] = Proposal({
-            id: latestProposalId,
+    function createProposal(SpendingProposal memory sp, ConfigProposal memory cp) internal onlyActiveMembers {
+        proposals[proposalCount] = Proposal({
             proposer: msg.sender,
             endTime: block.timestamp + voteTime,
             yesVotes: 0,
@@ -204,15 +208,17 @@ contract DAO {
             numMembersVoted: 0,
             realized: false,
             spendingProposal: sp,
-            configurationProposal: cp
+            configProposal: cp
         });
-        emit NewProposal(proposals[latestProposalId]);
+        emit NewProposal(proposals[proposalCount]);
+        proposalCount += 1;
+
     }
 
     // Vote on a proposal and get rewarded with points
     // maybe proof 
     function vote(uint proposalId, bool votingYes) external onlyActiveMembers {
-        require(proposalId <= latestProposalId && proposalId > 0, "No proposal exists with this id");
+        require(proposalId < proposalCount, "No proposal exists with this id");
         require(proposals[proposalId].endTime > block.timestamp, "Voting period has ended");
         require(memberVotedOnProposal[msg.sender][proposalId] == false, "You have already voted once");
         require(proposals[proposalId].proposer != msg.sender, "You cannot vote on your own proposal");
@@ -232,34 +238,39 @@ contract DAO {
     }
 
     function payPeriodFee() external payable onlyMembers {
-        uint periodsToPay = (nextPaymentDeadline() - members[msg.sender].lastPayedDeadline) / periodLength;
+        uint nextPeriod = nextPeriodStart();
+        uint periodsToPay = (nextPeriod - members[msg.sender].lastPayedPeriod) / periodLength;
         require(periodsToPay == 0, "You have already payed for this period");
         require(msg.value == periodFee * periodsToPay, "Value does not equal required period fee");
         members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
-        members[msg.sender].lastPayedDeadline = nextPaymentDeadline();
+        members[msg.sender].lastPayedPeriod = nextPeriodStart();
+        activeMembersInPeriod[nextPeriod] += 1;
     }
 
     function realizeProposal(uint id) external onlyActiveMembers {
-        require(id <= latestProposalId && id > 0, "No proposal exists with this id");
+        require(id < proposalCount, "No proposal exists with this id");
         require(proposals[id].endTime <= block.timestamp, "Voting peroid is not over");
         require(proposals[id].realized == false, "Proposal already realized");
-        require((proposals[id].numMembersVoted  * 100) / numberOfMembers >= quorum, "Not enough members participated in the vote"); // multiply with 100 before dividing to avoid rounding error
+        uint activeMembers = activeMembersInPeriod[nextPeriodStart() - periodLength];
+        require((proposals[id].numMembersVoted  * 100) / activeMembers >= quorum, "Not enough members participated in the vote"); // multiply with 100 before dividing to avoid rounding error
         require(proposals[id].yesVotes >= proposals[id].noVotes, "Proposal did not pass vote");
-        require(proposals[id].spendingProposal.amount <= address(this).balance, "Not enough funds to complete proposal");
     
-        if (proposals[id].spendingProposal.exists) {
-            fundsToWithdraw[proposals[id].spendingProposal.recipient] += proposals[id].spendingProposal.amount;
+        SpendingProposal storage spendingProposal = proposals[id].spendingProposal;
+        if (spendingProposal.exists) {
+            require(spendingProposal.amount <= address(this).balance, "Not enough funds to complete proposal");
+            fundsToWithdraw[spendingProposal.recipient] += spendingProposal.amount;
         }
-        if (proposals[id].configurationProposal.exists) {
-            updateConfigurations(id);
+
+        ConfigProposal storage configProposal = proposals[id].configProposal;
+        if (configProposal.exists) {
+            updateConfigurations(configProposal);
         }
-        proposals[id].realized = true;
         
+        proposals[id].realized = true;
         emit ProposalRealized(id);
     }
 
-    function updateConfigurations(uint proposalId) internal onlyActiveMembers {
-        ConfigurationProposal storage proposal = proposals[proposalId].configurationProposal;
+    function updateConfigurations(ConfigProposal storage proposal) internal onlyActiveMembers {
         quorum = proposal.quorum;
         minBuyIn = proposal.minBuyIn;
         voteTime = proposal.voteTime;
@@ -270,7 +281,7 @@ contract DAO {
 
     // Returns time left on proposal in seconds
     function getTimeLeftOnProposal(uint id) public view returns(uint) {
-        require(id <= latestProposalId && id > 0, "No proposal exists with this id");
+        require(id < proposalCount, "No proposal exists with this id");
         uint endTime = proposals[id].endTime;
         return endTime - block.timestamp;
     } 
@@ -284,10 +295,10 @@ contract DAO {
     }
 
     function isActive(address memberAddress) internal view returns(bool) {
-        return members[memberAddress].lastPayedDeadline + periodLength > block.timestamp;
+        return members[memberAddress].lastPayedPeriod + periodLength > block.timestamp;
     }
 
-    function nextPaymentDeadline() public view returns(uint) {
+    function nextPeriodStart() public view returns(uint) {
         uint timeSinceLastPayment = block.timestamp % periodLength;
         if (timeSinceLastPayment == 0) {
             return block.timestamp;
@@ -300,7 +311,7 @@ contract DAO {
         return address(this).balance;
     }
 
-    // verify this
+    // TODO: verify this
     function sqrt(uint x) internal pure returns (uint y) {
         uint z = (x + 1) / 2;
         y = x;
