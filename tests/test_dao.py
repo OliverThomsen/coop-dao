@@ -1,12 +1,12 @@
 import pytest
 from brownie import accounts, DAO, exceptions
 
-min_buy_in = 1 * 10**18         # 1 eth 
+buy_in = 1 * 10**18         # 1 eth 
 period_fee = 0.1 * 10**18       # 0.1 eth
 period_length = 2629800         # 1 month (365.25 / 12 * 24 * 60 * 60)
 voting_reward = 0.01 * 10**18   # 0.01 eth (in internal points)
 quorum = 50                     # 50%
-vote_time = 604800               # 1 week (60 * 60 * 24 * 7)
+vote_time = 604800              # 1 week (60 * 60 * 24 * 7)
 one_eth = 1 * 10 ** 18
 
 
@@ -21,7 +21,7 @@ def mallory():
 @pytest.fixture
 def dao(creator):
     return DAO.deploy(
-        min_buy_in,
+        buy_in,
         period_fee,
         period_length,
         voting_reward,
@@ -41,7 +41,7 @@ def test_deploy(creator):
     
     # Act
     dao = DAO.deploy(
-        min_buy_in,
+        buy_in,
         period_fee,
         period_length,
         voting_reward,
@@ -51,7 +51,7 @@ def test_deploy(creator):
     )
 
     # Assert
-    assert min_buy_in == dao.minBuyIn()
+    assert buy_in == dao.buyInFee()
     assert period_fee == dao.periodFee()
     assert period_length == dao.periodLength()
     assert voting_reward == dao.votingReward()
@@ -95,16 +95,16 @@ def test_join_dao(dao, creator):
 
 def test_join_before_request(dao, mallory):
     with pytest.raises(exceptions.VirtualMachineError):
-        dao.join({'from': mallory, 'value': min_buy_in})
+        dao.join({'from': mallory, 'value': buy_in})
 
 def test_join_not_approved(dao, mallory):    
-    dao.requestToJoin(min_buy_in, {'from': mallory})
+    dao.requestToJoin(buy_in, {'from': mallory})
     with pytest.raises(exceptions.VirtualMachineError): 
-        dao.join({'from': mallory, 'value': min_buy_in})
+        dao.join({'from': mallory, 'value': buy_in})
 
 def test_join_fee_too_low(dao, creator, mallory):
-    correct_fee = min_buy_in
-    low_fee = min_buy_in - 1
+    correct_fee = buy_in
+    low_fee = buy_in - 1
     with pytest.raises(exceptions.VirtualMachineError): 
         dao.requestToJoin(low_fee, {'from': mallory})
     dao.requestToJoin(correct_fee, {'from': mallory})
@@ -113,9 +113,9 @@ def test_join_fee_too_low(dao, creator, mallory):
         dao.join({'from': mallory, 'value': low_fee})
 
 def test_join_twice(dao, mallory):
-    dao.requestToJoin(min_buy_in, {'from': mallory})
+    dao.requestToJoin(buy_in, {'from': mallory})
     with pytest.raises(exceptions.VirtualMachineError): 
-        dao.requestToJoin(min_buy_in, {'from': mallory})
+        dao.requestToJoin(buy_in, {'from': mallory})
         
 
 
