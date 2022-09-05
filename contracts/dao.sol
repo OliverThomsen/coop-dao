@@ -7,10 +7,8 @@ pragma solidity ^0.8.0;
  */
 contract DAO {
 
-    //todo
-    uint balance;
 
-    // Governance attributes
+    // Governance variables
     uint8 public quorum; // minimum percentage of active members required to participate in a vote
     uint public buyInFee; // minimum fee to join the DAO
     uint public voteTime; // amount of time in seconds you have, to vote on a proposal
@@ -24,10 +22,13 @@ contract DAO {
     mapping(uint => uint) public activeMembersInPeriod; // (timestamp => activeMembers) number of active members for every period
    
     // Proposals
-    uint public proposalCount = 0;
-    mapping(uint => Proposal) public proposals; // Proposals indexed by incremental ids
-    mapping(address => mapping(uint => bool)) public memberVotedOnProposal; // (memberAddress => proposalId => hasVoted) 
-    mapping(address => uint) public contractorBalances; // 
+    uint public reservedFunds = 0; // funds reseved for passed spending proposals
+    uint public spendingProposalCount = 0; // total number of speding proposals
+    uint public govProposalCount = 0; // total number of governance proposals
+    uint private proposalCount = 0; // total instances of the Vote struct
+    mapping(uint => SpendingProposal) public spendingProposals; // spending proposals indexed by spendingProposalCount
+    mapping(uint => GovProposal) public govProposals; // governance proposals indexed by govProposalCount
+    mapping(address => mapping(uint => bool)) public memberVotedOnProposal; // tells if a member voted on a proposal (memberAddress => proposalId => hasVoted) 
 
     // Join requests
     mapping(address => JoinRequest) public joinRequests; // JoinRequests indexed by the requester wallet address
@@ -36,8 +37,12 @@ contract DAO {
     // Events
     event NewJoinRequest(address from);
     event NewMember(address member);
-    event NewProposal(uint proposalId, Proposal proposal);
-    event ProposalRealized(uint proposalId, Proposal proposal);
+    
+    event NewSpendingProposal(SpendingProposal spendingProposal);
+    event EndSpendingProposalBegun(SpendingProposal spendingProposal);
+
+    event NewGovProposal(GovProposal govProposal);
+    event GovernanceUpdate(GovProposal govProposal);
 
     struct Member {
         uint points;
@@ -45,25 +50,20 @@ contract DAO {
         bool exists;
     }
 
-    struct Proposal {
-        address proposer; // the creater of the proposal 
-        uint endTime; // epoch timestamp of when it is not longer possible to vote on proposal
-        uint yesVotes; // total number of YES votes on proposal, weighted by square root of member points
-        uint noVotes; // total number of NO votes on proposal, weighted by square root of member points
-        uint numMembersVoted; // number of members who have voted on proposal
-        bool realized; // true if proposal is realized
-        SpendingProposal spendingProposal; // spending proposal object if applicable
-        GovProposal govProposal; // govenance proposal object if applicable
-    }
-
     struct SpendingProposal {
+        uint id; // derived form incrementing spendingProposalCount
         string name; // name or description of proposal 
         uint amount; // amount of funds to transfer to recipient 
         address payable recipient; // recieving address of the amount of funds
         bool exists; // always true once created otherwise false
+        bool withdrawn; // true if recipient has withdrawn amount
+        bool hasReservedFunds; // true if contractor has reserved the funds for withdrawing later
+        Vote initialVote; // used for voting on weather or not to accept the proposal
+        Vote finalVote; // used for voting on weather or not to release the funds to the contractor
     }
 
     struct GovProposal {
+        uint id; // derived form incrementing govProposalCount
         uint8 quorum;
         uint buyInFee;
         uint voteTime;
@@ -71,6 +71,17 @@ contract DAO {
         uint periodFee;
         uint periodLength;
         bool exists;
+        bool implemented;
+        Vote vote;
+    }
+
+    struct Vote {
+        uint id; // derived from incrementing proposalCount
+        address proposer; // the creater of the proposal 
+        uint endTime; // epoch timestamp of when it is not longer possible to vote on proposal
+        uint yesVotes; // total number of votes for a proposal (weighted by square root of member points)
+        uint noVotes; // total number of votes against a proposal (weighted by square root of member points)
+        uint numMembersVoted; // number of members who have voted on proposal
     }
 
     struct JoinRequest {
@@ -88,7 +99,7 @@ contract DAO {
 
     modifier onlyActiveMembers {
         require(members[msg.sender].exists == true, "Only members can call this function");
-        require(isActive(msg.sender) == true, "Only active members can call this function");
+        require(memberIsActive(msg.sender) == true, "Only active members can call this function");
         _;
     }
 
@@ -124,8 +135,18 @@ contract DAO {
         members[msg.sender].points += msg.value;
     }
 
-    // Send a request to join the DAO 
-    // Other members must accept the request  
+    // Must be called once every period (before nextPeriodStart) to stay an active member
+    function payPeriodFee() external payable onlyMembers {
+        uint nextPeriod = nextPeriodStart();
+        uint periodsToPay = (nextPeriod - members[msg.sender].lastPayedPeriod) / periodLength;
+        require(periodsToPay == 0, "You have already payed for this period");
+        require(msg.value == periodFee * periodsToPay, "Value does not equal required period fee");
+        members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
+        members[msg.sender].lastPayedPeriod = nextPeriod;
+        activeMembersInPeriod[nextPeriod] += 1;
+    }
+
+    // Send a request to join the DAO, other members must then approve the request  
     function requestToJoin(uint _buyIn) external onlyNonMembers {
         require(joinRequests[msg.sender].send == false, "You already send a join request");
         require(_buyIn >= buyInFee, "Buy in value too low");
@@ -138,10 +159,8 @@ contract DAO {
         emit NewJoinRequest(msg.sender);
     }
 
-
     // Approve a request to join the DAO
     // When a request is approved, the requester can call the join function to officially join the DAO
-    // TODO: Quadratic voting on new members?
     function approveJoinRequest(address requester) external onlyActiveMembers {
         require(joinRequests[requester].send == true, "This address has not send a join request");
         require(memberApprovedRequest[msg.sender][requester] == false, "You have already approved this join request");
@@ -149,7 +168,7 @@ contract DAO {
         joinRequests[requester].approvals += 1;
     }
 
-    // msg.value is in the unit Wei. 1 Ether = 10^18 Wei
+    // Join the DAO when more than the quorum % of the active members have approve your join request
     function join() payable external onlyNonMembers {
         require(joinRequests[msg.sender].send == true, "You need to send a join request before you can join");
         uint currentPeriod = nextPeriodStart() - periodLength;
@@ -170,143 +189,218 @@ contract DAO {
         emit NewMember(msg.sender);
     }
 
-
     // Propose to spend money
-    function ProposeSpending(uint amount, address payable recipient, string memory name) external onlyActiveMembers {
-        require(address(this).balance >= amount, "Not enough funds");
-        SpendingProposal memory spendingProposal = SpendingProposal({
+    function proposeSpending(uint amount, address payable recipient, string memory name) external onlyActiveMembers returns(uint){
+        require(availableFunds() >= amount, "Not enough funds");
+        uint id = spendingProposalCount;
+        spendingProposals[id] = SpendingProposal({
+            id: id,
             name: name,
             amount: amount,
             recipient: recipient,
-            exists: true
-
+            exists: true,
+            withdrawn: false,
+            hasReservedFunds: false,
+            initialVote: createVote(block.timestamp + voteTime),
+            finalVote: createVote(0) // endTime is 0 because voting has not started yet
         });
-        GovProposal memory emptyGovProposal;
-        createProposal(spendingProposal, emptyGovProposal);
+        spendingProposalCount++;
+        emit NewSpendingProposal(spendingProposals[id]);
+        return id;
     }
 
-    // propose vote to change global params
-    function ProposeConfigurationUpdate(uint8 _quorum, uint _buyInFee, uint _voteTime,  uint _votingReward, uint _periodFee, uint _periodLength) external onlyActiveMembers {
-        GovProposal memory govProposal = GovProposal({
+    // Propose an update to change governance variables
+    function proposeGovernanceUpdate(uint8 _quorum, uint _buyInFee, uint _voteTime,  uint _votingReward, uint _periodFee, uint _periodLength) external onlyActiveMembers returns(uint){
+        uint id = govProposalCount;
+        govProposals[id] = GovProposal({
+            id: id,
             quorum: _quorum,
             buyInFee: _buyInFee,
             voteTime: _voteTime,
             votingReward: _votingReward,
             periodFee: _periodFee,
             periodLength: _periodLength,
-            exists: true
+            exists: true,
+            implemented: false,
+            vote: createVote(block.timestamp + voteTime)
         });
-        SpendingProposal memory emptySpendingProposal;
-        createProposal(emptySpendingProposal, govProposal);
+        govProposalCount++;
+        emit NewGovProposal(govProposals[id]);
+        return id;
     }
 
-    function createProposal(SpendingProposal memory sp, GovProposal memory cp) internal onlyActiveMembers {
-        proposals[proposalCount] = Proposal({
+    function createVote(uint endTime) internal onlyActiveMembers returns(Vote memory){
+        Vote memory vote = Vote({
+            id: proposalCount,
             proposer: msg.sender,
-            endTime: block.timestamp + voteTime,
+            endTime: endTime,
             yesVotes: 0,
             noVotes: 0,
-            numMembersVoted: 0,
-            realized: false,
-            spendingProposal: sp,
-            govProposal: cp
+            numMembersVoted: 0
         });
-        emit NewProposal(proposalCount, proposals[proposalCount]);
         proposalCount += 1;
-
+        return vote;
     }
 
-    // Vote on a proposal and get rewarded with points
-    // maybe proof 
-    function vote(uint proposalId, bool votingYes) external onlyActiveMembers {
-        require(proposalId < proposalCount, "No proposal exists with this id");
-        require(proposals[proposalId].endTime > block.timestamp, "Voting period has ended");
-        require(memberVotedOnProposal[msg.sender][proposalId] == false, "You have already voted once");
-        require(proposals[proposalId].proposer != msg.sender, "You cannot vote on your own proposal");
-        memberVotedOnProposal[msg.sender][proposalId] = true;
+    // Vote on accepting spending proposal
+    function voteSpendingProposal(uint id, bool votingYes) external onlyActiveMembers {
+        require(id < spendingProposalCount, "No spending proposal exists with this id");
+        Vote storage vote = spendingProposals[id].initialVote;
+        submitVote(vote, votingYes);
+    }
+
+    // Vote on releasing funds from spending proposal
+    function voteReleaseFundsSpendingProposal(uint proposalId, bool votingYes) external onlyActiveMembers {
+        require(proposalId < spendingProposalCount, "No spending proposal exists with this id");
+        Vote storage initialVote = spendingProposals[proposalId].initialVote;
+        (bool initialVotePassed,) = voteHasPassed(initialVote);
+        require(initialVotePassed == true, "Initail vote has not passed");
+        Vote storage finalVote = spendingProposals[proposalId].finalVote;
+        // If voting period has not begun, begin voting period
+        if (finalVote.endTime == 0) {
+            finalVote.endTime = block.timestamp + voteTime;
+            emit EndSpendingProposalBegun(spendingProposals[proposalId]);
+        }
+        // If Voting period ended, and vote not passed, restart final vote
+        (bool finalVotePassed,) = voteHasPassed(finalVote);
+        if(finalVote.endTime >= block.timestamp && !finalVotePassed) {
+            spendingProposals[proposalId].finalVote = createVote(block.timestamp + voteTime);
+            emit EndSpendingProposalBegun(spendingProposals[proposalId]);
+        }
+        submitVote(spendingProposals[proposalId].finalVote, votingYes);
+    }
+
+    // Vote on governance proposal
+    function voteGovProposal(uint id, bool votingYes) external onlyActiveMembers {
+        require(id < govProposalCount, "No governance proposal exists with this id");
+        submitVote(govProposals[id].vote, votingYes);
+    }
+
+    function submitVote(Vote storage vote, bool votingYes) internal onlyActiveMembers {
+        require(vote.endTime > block.timestamp, "Voting period has ended");
+        require(memberVotedOnProposal[msg.sender][vote.id] == false, "You have already voted once");
+        memberVotedOnProposal[msg.sender][vote.id] = true;
         // Quadratic voting: take square root of points to make it harder to buy power
         uint weightedVote = sqrt(members[msg.sender].points);
         if (votingYes) {
-            proposals[proposalId].yesVotes = weightedVote;
+            vote.yesVotes = weightedVote;
         } else {
-            proposals[proposalId].noVotes = weightedVote;
+            vote.noVotes = weightedVote;
         }
-        proposals[proposalId].numMembersVoted += 1;
-        // Award points for voting, if not own proposal
-        if (proposals[proposalId].proposer != msg.sender) {
+        vote.numMembersVoted += 1;
+        // Award points for voting, if not own vote
+        if (vote.proposer != msg.sender) {
             members[msg.sender].points += votingReward;
         }
     }
 
-    function payPeriodFee() external payable onlyMembers {
-        uint nextPeriod = nextPeriodStart();
-        uint periodsToPay = (nextPeriod - members[msg.sender].lastPayedPeriod) / periodLength;
-        require(periodsToPay == 0, "You have already payed for this period");
-        require(msg.value == periodFee * periodsToPay, "Value does not equal required period fee");
-        members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
-        members[msg.sender].lastPayedPeriod = nextPeriodStart();
-        activeMembersInPeriod[nextPeriod] += 1;
+    // Withdraw funds from a passed spending proposal
+    function withdraw(uint proposalId) external {
+        (bool canWithdraw, string memory error) = canWithdrawProposal(proposalId);
+        require(canWithdraw == true, error);
+        SpendingProposal storage proposal = spendingProposals[proposalId];
+
+        // Clear reserved funds for proposal
+        if (proposal.hasReservedFunds) {
+            proposal.hasReservedFunds = false;
+            reservedFunds -= proposal.amount;
+        }
+        // updating internal accounts before transfering to prevent reentrancy attack
+        proposal.withdrawn = true;
+        payable(msg.sender).transfer(proposal.amount);
     }
 
-
-    // todo: get points for this ...
-    // maybe call by conrtactor - but then implement voting round two - avoid bribing smallest memeber to releaze funds
-    // second vote emits event 
-    function realizeProposal(uint id) external onlyActiveMembers {
-        require(id < proposalCount, "No proposal exists with this id");
-        require(proposals[id].endTime <= block.timestamp, "Voting peroid is not over");
-        require(proposals[id].realized == false, "Proposal already realized");
-        uint activeMembers = activeMembersInPeriod[nextPeriodStart() - periodLength];
-        require((proposals[id].numMembersVoted  * 100) / activeMembers >= quorum, "Not enough members participated in the vote"); // multiply with 100 before dividing to avoid rounding error
-        require(proposals[id].yesVotes >= proposals[id].noVotes, "Proposal did not pass vote");
+    // Call this funciton before you call withdraw to avoid paying gas for a failed transaction
+    function canWithdrawProposal(uint proposalId) public view returns(bool, string memory){
+        (bool isReady, string memory error) = isReadyToWithdraw(proposalId);
+        if (isReady == false) {
+            return (false, error);
+        }
+        bool enoughFunds;
+        SpendingProposal storage proposal = spendingProposals[proposalId];
+        if (proposal.hasReservedFunds) {
+            enoughFunds = proposal.amount <= address(this).balance;
+        }
+        enoughFunds = proposal.amount <= availableFunds();
+        return (enoughFunds, enoughFunds ? "Can withdraw" : "Not enough funds");
     
-        SpendingProposal storage spendingProposal = proposals[id].spendingProposal;
-        if (spendingProposal.exists) {
-            require(spendingProposal.amount <= address(this).balance, "Not enough funds to complete proposal");
-            contractorBalances[spendingProposal.recipient] += spendingProposal.amount;
-        }
-
-        GovProposal storage govProposal = proposals[id].govProposal;
-        if (govProposal.exists) {
-            updateConfigurations(govProposal);
-        }
-        
-        proposals[id].realized = true;
-        emit ProposalRealized(id, proposals[id]);
-        // todo update balance
     }
 
-    // todo
-    function isRealized(uint proposalId) public view returns(bool) {
-
+    // Call this function if there are not enough funds to withdraw the proposal amount
+    function reserveFunds(uint proposalId) public {
+        (bool isReady, string memory errorMessage) = isReadyToWithdraw(proposalId);
+        require(isReady == true, errorMessage);
+        SpendingProposal storage proposal = spendingProposals[proposalId];
+        require(proposal.hasReservedFunds == false, "You have already reserved your funds");
+        proposal.hasReservedFunds = true;
+        reservedFunds += proposal.amount;
     }
 
-    function updateConfigurations(GovProposal storage proposal) internal onlyActiveMembers {
+    function isReadyToWithdraw(uint proposalId) internal view returns(bool, string memory){
+        if (proposalId >= spendingProposalCount) {
+            return (false, "No spending proposal exists with this id");
+        }
+        SpendingProposal storage proposal = spendingProposals[proposalId];
+        if (proposal.recipient != msg.sender) {
+            return (false, "You are not the recipient");
+        }
+        if (proposal.withdrawn == true) {
+            return (false, "You have already withdrawn your funds");
+        }
+        (bool passed, string memory message) = voteHasPassed(proposal.finalVote);
+        if (passed == false) {
+            return (false, message);
+        }
+        return (true, "Ready for withdrawel");
+    }
+
+    function spendingProposalPassed(uint id) external view returns(bool, string memory) {
+        require(id < spendingProposalCount, "No spending proposal exists with this id");
+        return voteHasPassed(spendingProposals[id].initialVote);
+    }
+
+    function spendingProposalFundsReleased(uint id)  external view returns(bool, string memory) {
+        require(id < spendingProposalCount, "No spending proposal exists with this id");
+        return voteHasPassed(spendingProposals[id].finalVote);
+    }
+
+    function govProposalPassed(uint id) external view returns(bool, string memory) {
+        return voteHasPassed(govProposals[id].vote);
+    }
+
+    function voteHasPassed(Vote memory vote) internal view returns(bool, string memory) {
+        if (vote.endTime > block.timestamp) {
+            return (false, "Voting peroid is not over");
+        }
+        uint activeMembers = activeMembersInPeriod[nextPeriodStart() - periodLength];
+        if (vote.numMembersVoted  * 100 < quorum * activeMembers) {
+            return (false, "Not enough members participated in the vote");
+        }
+        if (vote.yesVotes <= vote.noVotes) {
+            return (false, "Vote did not pass");
+        }
+        return (true, "Vote passed");
+    }
+
+    // Implement a governace proposal once it has passed the vote
+    function implementGovProposal(uint id) external onlyActiveMembers {
+        require(id < govProposalCount, "No governance proposal exists with this id");
+        GovProposal storage proposal = govProposals[id];
+        require(proposal.implemented == false, "Governance proposal already implimented");
+        (bool passed, string memory message) = voteHasPassed(proposal.vote);
+        require(passed == true, message);
+        proposal.implemented = true;
         quorum = proposal.quorum;
         buyInFee = proposal.buyInFee;
         voteTime = proposal.voteTime;
         votingReward = proposal.votingReward;
         periodFee = proposal.periodFee;
         periodLength = proposal.periodLength;
+        emit GovernanceUpdate(proposal);
     }
 
-    // Returns time left on proposal in seconds
-    function getTimeLeftOnProposal(uint id) public view returns(uint) {
-        require(id < proposalCount, "No proposal exists with this id");
-        uint endTime = proposals[id].endTime;
-        return endTime - block.timestamp;
-    } 
 
-
-    function withdraw() external {
-        uint amount = contractorBalances[msg.sender];
-        require(amount > 0, "You have no funds to withdraw");
-        // updating internal accounts before transfering to prevent reentrancy attack
-        contractorBalances[msg.sender] = 0;
-        payable(msg.sender).transfer(amount);
-    }
-
-    function isActive(address memberAddress) internal view returns(bool) {
+    function memberIsActive(address memberAddress) public view returns(bool) {
         return members[memberAddress].lastPayedPeriod + periodLength > block.timestamp; 
     }
 
@@ -319,13 +413,15 @@ contract DAO {
         }
     }
 
-    function getBalance() external view returns(uint) {
-        return address(this).balance;
+    function availableFunds() public view returns(uint) {
+        return address(this).balance - reservedFunds;
     }
 
-    // TODO: verify this
+    // Simple square root function from https://github.com/OpenZeppelin/openzeppelin-contracts/pull/3242
+    // Uses a lot of gas for big ints, but the implementation is very simple.
+    // Could be replaced with the very long but more efficient version from open zeppelin
     function sqrt(uint x) internal pure returns (uint y) {
-        uint z = (x + 1) / 2;
+        uint z = x / 2 + x % 2;
         y = x;
         while (z < y) {
             y = z;
