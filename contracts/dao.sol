@@ -58,8 +58,8 @@ contract DAO {
         bool exists; // always true once created otherwise false
         bool withdrawn; // true if recipient has withdrawn amount
         bool hasReservedFunds; // true if contractor has reserved the funds for withdrawing later
-        Vote initialVote; // used for voting on weather or not to accept the proposal
-        Vote finalVote; // used for voting on weather or not to release the funds to the contractor
+        Vote initialVote; // used for voting on whether or not to accept the proposal
+        Vote finalVote; // used for voting on whether or not to release the funds to the contractor
     }
 
     struct GovProposal {
@@ -85,10 +85,9 @@ contract DAO {
     }
 
     struct JoinRequest {
-        address requester;
-        bool send;
-        uint buyIn;
-        uint approvals;
+        address requester; // Address of the person requesting to join
+        bool send; // True when the request is created 
+        uint approvals; // number of members who have approved the request
     }
 
 
@@ -139,7 +138,7 @@ contract DAO {
     function payPeriodFee() external payable onlyMembers {
         uint nextPeriod = nextPeriodStart();
         uint periodsToPay = (nextPeriod - members[msg.sender].lastPayedPeriod) / periodLength;
-        require(periodsToPay == 0, "You have already payed for this period");
+        require(periodsToPay > 0, "You have already payed for this period");
         require(msg.value == periodFee * periodsToPay, "Value does not equal required period fee");
         members[msg.sender].points += msg.value;  // get points equivalent to amount of ETH
         members[msg.sender].lastPayedPeriod = nextPeriod;
@@ -147,13 +146,11 @@ contract DAO {
     }
 
     // Send a request to join the DAO, other members must then approve the request  
-    function requestToJoin(uint _buyIn) external onlyNonMembers {
+    function requestToJoin() external onlyNonMembers {
         require(joinRequests[msg.sender].send == false, "You already send a join request");
-        require(_buyIn >= buyInFee, "Buy in value too low");
         joinRequests[msg.sender] = JoinRequest({
             requester: msg.sender,
             send: true,
-            buyIn: _buyIn,
             approvals: 0 
         });
         emit NewJoinRequest(msg.sender);
@@ -174,8 +171,8 @@ contract DAO {
         uint currentPeriod = nextPeriodStart() - periodLength;
         uint activeMembers = activeMembersInPeriod[currentPeriod];
         require(joinRequests[msg.sender].approvals * 100 >= quorum * activeMembers, "Your request to join has not been approved by enough active members");
-        require(msg.value == joinRequests[msg.sender].buyIn, "Value must be the same as buyIn in the joinRequest");
-        delete joinRequests[msg.sender]; // delete sets all values in the srtuct to their default value
+        require(msg.value >= buyInFee, "Buy in value too low");
+        delete joinRequests[msg.sender]; // delete join request (sets all values in the srtuct to their default value)
         uint nextPeriod = nextPeriodStart();
         members[msg.sender] = Member({
             points: msg.value,
@@ -210,7 +207,7 @@ contract DAO {
     }
 
     // Propose an update to change governance variables
-    function proposeGovernanceUpdate(uint8 _quorum, uint _buyInFee, uint _voteTime,  uint _votingReward, uint _periodFee, uint _periodLength) external onlyActiveMembers returns(uint){
+    function proposeGovernanceUpdate(uint8 _quorum, uint _buyInFee, uint _voteTime,  uint _votingReward, uint _periodFee, uint _periodLength) external onlyActiveMembers returns(uint) {
         uint id = govProposalCount;
         govProposals[id] = GovProposal({
             id: id,
@@ -263,11 +260,11 @@ contract DAO {
         }
         // If Voting period ended, and vote not passed, restart final vote
         (bool finalVotePassed,) = voteHasPassed(finalVote);
-        if(finalVote.endTime >= block.timestamp && !finalVotePassed) {
+        if(finalVote.endTime <= block.timestamp && !finalVotePassed) {
             spendingProposals[proposalId].finalVote = createVote(block.timestamp + voteTime);
             emit EndSpendingProposalBegun(spendingProposals[proposalId]);
         }
-        submitVote(spendingProposals[proposalId].finalVote, votingYes);
+        submitVote(finalVote, votingYes);
     }
 
     // Vote on governance proposal
@@ -336,7 +333,7 @@ contract DAO {
         reservedFunds += proposal.amount;
     }
 
-    function isReadyToWithdraw(uint proposalId) internal view returns(bool, string memory){
+    function isReadyToWithdraw(uint proposalId) internal view returns(bool, string memory) {
         if (proposalId >= spendingProposalCount) {
             return (false, "No spending proposal exists with this id");
         }
