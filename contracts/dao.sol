@@ -63,7 +63,7 @@ contract DAO {
     }
 
     struct GovProposal {
-        uint id; // derived form incrementing govProposalCount
+        uint id; // derived from incrementing govProposalCount
         uint8 quorum;
         uint buyInFee;
         uint voteTime;
@@ -86,7 +86,7 @@ contract DAO {
 
     struct JoinRequest {
         address requester; // Address of the person requesting to join
-        bool send; // True when the request is created 
+        bool sent; // True when the request is created 
         uint approvals; // number of members who have approved the request
     }
 
@@ -147,10 +147,10 @@ contract DAO {
 
     // Send a request to join the DAO, other members must then approve the request  
     function requestToJoin() external onlyNonMembers {
-        require(joinRequests[msg.sender].send == false, "You already send a join request");
+        require(joinRequests[msg.sender].sent == false, "You already sent a join request");
         joinRequests[msg.sender] = JoinRequest({
             requester: msg.sender,
-            send: true,
+            sent: true,
             approvals: 0 
         });
         emit NewJoinRequest(msg.sender);
@@ -159,7 +159,7 @@ contract DAO {
     // Approve a request to join the DAO
     // When a request is approved, the requester can call the join function to officially join the DAO
     function approveJoinRequest(address requester) external onlyActiveMembers {
-        require(joinRequests[requester].send == true, "This address has not send a join request");
+        require(joinRequests[requester].sent == true, "This address has not sent a join request");
         require(memberApprovedRequest[msg.sender][requester] == false, "You have already approved this join request");
         memberApprovedRequest[msg.sender][requester] = true;
         joinRequests[requester].approvals += 1;
@@ -167,7 +167,7 @@ contract DAO {
 
     // Join the DAO when more than the quorum % of the active members have approve your join request
     function join() payable external onlyNonMembers {
-        require(joinRequests[msg.sender].send == true, "You need to send a join request before you can join");
+        require(joinRequests[msg.sender].sent == true, "You need to send a join request before you can join");
         uint currentPeriod = nextPeriodStart() - periodLength;
         uint activeMembers = activeMembersInPeriod[currentPeriod];
         require(joinRequests[msg.sender].approvals * 100 >= quorum * activeMembers, "Your request to join has not been approved by enough active members");
@@ -293,8 +293,9 @@ contract DAO {
 
     // Withdraw funds from a passed spending proposal
     function withdraw(uint proposalId) external {
-        (bool canWithdraw, string memory error) = canWithdrawProposal(proposalId);
-        require(canWithdraw == true, error);
+        (bool canWithdraw, string memory errorMessage) = canWithdraw(proposalId);
+        require(canWithdraw == true, errorMessage);
+        require(enoughFundsForProposal(proposalId) == true, "Contract balnce too low. Use reserveFunds if you are the proposal recipient");
         SpendingProposal storage proposal = spendingProposals[proposalId];
 
         // Clear reserved funds for proposal
@@ -307,33 +308,26 @@ contract DAO {
         payable(msg.sender).transfer(proposal.amount);
     }
 
-    // Call this funciton before you call withdraw to avoid paying gas for a failed transaction
-    function canWithdrawProposal(uint proposalId) public view returns(bool, string memory){
-        (bool isReady, string memory error) = isReadyToWithdraw(proposalId);
-        if (isReady == false) {
-            return (false, error);
-        }
-        bool enoughFunds;
+    // Call this funciton before you call withdraw to avoid paying gas for a failed transaction if not enough funds
+    function enoughFundsForProposal(uint proposalId) public view returns(bool){
         SpendingProposal storage proposal = spendingProposals[proposalId];
         if (proposal.hasReservedFunds) {
-            enoughFunds = proposal.amount <= address(this).balance;
+            return proposal.amount <= address(this).balance;
         }
-        enoughFunds = proposal.amount <= availableFunds();
-        return (enoughFunds, enoughFunds ? "Can withdraw" : "Not enough funds");
-    
+        return proposal.amount <= availableFunds();    
     }
 
     // Call this function if there are not enough funds to withdraw the proposal amount
     function reserveFunds(uint proposalId) public {
-        (bool isReady, string memory errorMessage) = isReadyToWithdraw(proposalId);
-        require(isReady == true, errorMessage);
+        (bool canWithdraw, string memory errorMessage) = canWithdraw(proposalId);
+        require(canWithdraw == true, errorMessage);
         SpendingProposal storage proposal = spendingProposals[proposalId];
         require(proposal.hasReservedFunds == false, "You have already reserved your funds");
         proposal.hasReservedFunds = true;
         reservedFunds += proposal.amount;
     }
 
-    function isReadyToWithdraw(uint proposalId) internal view returns(bool, string memory) {
+    function canWithdraw(uint proposalId) internal view returns(bool, string memory) {
         if (proposalId >= spendingProposalCount) {
             return (false, "No spending proposal exists with this id");
         }
@@ -348,7 +342,7 @@ contract DAO {
         if (passed == false) {
             return (false, message);
         }
-        return (true, "Ready for withdrawel");
+        return (true, "Proposal amount can be withdrawn");
     }
 
     function spendingProposalPassed(uint id) external view returns(bool, string memory) {

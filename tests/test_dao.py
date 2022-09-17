@@ -194,7 +194,7 @@ def test_spending_proposal_flow_success(dao):
     chain.sleep(vote_time + 10)
     chain.mine(1)
     assert dao.spendingProposalPassed(id)[0] == True
-    assert dao.canWithdrawProposal(id, {'from': recipient})[0] == False
+    assert dao.spendingProposalFundsReleased(id)[0] == False
     with reverts("Not enough members participated in the vote"):
         dao.withdraw(id, {'from': recipient})
 
@@ -219,7 +219,6 @@ def test_spending_proposal_flow_success(dao):
     # assert dao.canWithdrawProposal(id, {'from': recipient})[0] == True # fails during --coverage
     dao.reserveFunds(id, {'from': recipient}) # todo make seperate test for this
     dao.withdraw(id, {'from': recipient})
-    assert dao.canWithdrawProposal(id, {'from': recipient})[0] == False
     with reverts("You have already withdrawn your funds"):
         dao.withdraw(id, {'from': recipient})
     assert dao.balance() == prevBalanceDAO - amount
