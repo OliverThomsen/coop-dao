@@ -30,8 +30,6 @@ def dao(creator):
         {'from': creator, 'value': one_eth}
     )
 
-
-
 @pytest.fixture
 def dao_with_3_members(dao):
     # join account 1
@@ -41,6 +39,7 @@ def dao_with_3_members(dao):
     # join account 2
     dao.requestToJoin({'from': accounts[2]})
     dao.approveJoinRequest(accounts[2], {'from': accounts[0]})
+    dao.approveJoinRequest(accounts[2], {'from': accounts[1]})
     dao.join({'from': accounts[2], 'value': buy_in})
     return dao
 
@@ -109,24 +108,28 @@ def test_join_dao(dao, creator):
     assert True == dao.memberIsActive(new_member)
 
 def test_join_before_request(dao, mallory):
-    with pytest.raises(exceptions.VirtualMachineError):
+    with reverts('You need to send a join request before you can join'):
         dao.join({'from': mallory, 'value': buy_in})
 
 def test_join_not_approved(dao, mallory):    
     dao.requestToJoin({'from': mallory})
-    with pytest.raises(exceptions.VirtualMachineError): 
+    with reverts('Your request to join has not been approved by enough active members'): 
         dao.join({'from': mallory, 'value': buy_in})
 
 def test_join_fee_too_low(dao, creator, mallory):
     low_fee = buy_in - 1
     dao.requestToJoin({'from': mallory})
     dao.approveJoinRequest(mallory, {'from': creator})
-    with pytest.raises(exceptions.VirtualMachineError): 
+    with reverts("This address has not sent a join request"):
+        dao.approveJoinRequest(accounts[5], {'from': creator})
+    with reverts("You have already approved this join request"):
+        dao.approveJoinRequest(mallory, {'from': creator})
+    with reverts('Buy in value too low'): 
         dao.join({'from': mallory, 'value': low_fee})
 
 def test_join_twice(dao, mallory):
     dao.requestToJoin({'from': mallory})
-    with pytest.raises(exceptions.VirtualMachineError): 
+    with reverts('You already sent a join request'): 
         dao.requestToJoin({'from': mallory})
         
 
@@ -178,7 +181,6 @@ def test_propose_spending(dao):
     assert final_vote[4] == 0 # no votes 
     assert final_vote[4] == 0 # number if members voted
 
-
 def test_spending_proposal_flow_success(dao):
     # Arrange 
     amount = 0.1 * 10**18
@@ -188,8 +190,11 @@ def test_spending_proposal_flow_success(dao):
     id = tx.return_value
 
     # Inital voting round
-    tx = dao.voteSpendingProposal(id, True, {'from': accounts[0]})
-    tx.wait(1)
+    with reverts('No spending proposal exists with this id'):
+        dao.voteSpendingProposal(123, True, {'from': accounts[0]})
+    dao.voteSpendingProposal(id, True, {'from': accounts[0]})
+    with reverts('No spending proposal exists with this id'):
+        dao.spendingProposalPassed(123)
     assert dao.spendingProposalPassed(id)[0] == False
     chain.sleep(vote_time + 10)
     chain.mine(1)
@@ -212,17 +217,85 @@ def test_spending_proposal_flow_success(dao):
     chain.sleep(vote_time + 10)
     chain.mine(1)
     assert dao.spendingProposalFundsReleased(id)[0] == True
+    with reverts('No spending proposal exists with this id'):
+        dao.spendingProposalFundsReleased(123)
 
     # Withdraw
     prevBalanceDAO = dao.balance()
     prevBalanceReciever = recipient.balance()
-    # assert dao.canWithdrawProposal(id, {'from': recipient})[0] == True # fails during --coverage
-    dao.reserveFunds(id, {'from': recipient}) # todo make seperate test for this
     dao.withdraw(id, {'from': recipient})
     with reverts("You have already withdrawn your funds"):
         dao.withdraw(id, {'from': recipient})
     assert dao.balance() == prevBalanceDAO - amount
     assert recipient.balance() == prevBalanceReciever + amount
+
+def test_spending_proposal_reserve(dao_with_3_members):
+    dao = dao_with_3_members
+    amount = 2 * 10**18
+    name = "Reserve Test"
+    recipient = accounts[3]
+    
+    # Create proposal
+    tx = dao.proposeSpending(amount, recipient, name, {'from': accounts[0]})
+    proposal_id_1 = tx.return_value
+    tx = dao.proposeSpending(amount, recipient, name, {'from': accounts[0]})
+    proposal_id_2 = tx.return_value
+    
+    # Vote on proposal
+    dao.voteSpendingProposal(proposal_id_1, True, {'from': accounts[0]})
+    dao.voteSpendingProposal(proposal_id_1, True, {'from': accounts[1]})
+    dao.voteSpendingProposal(proposal_id_1, False, {'from': accounts[2]})
+    
+    dao.voteSpendingProposal(proposal_id_2, True, {'from': accounts[0]})
+    dao.voteSpendingProposal(proposal_id_2, True, {'from': accounts[1]})
+    dao.voteSpendingProposal(proposal_id_2, False, {'from': accounts[2]})
+    with reverts("Initail vote has not passed"):
+        dao.voteReleaseFundsSpendingProposal(proposal_id_1, False, {'from': accounts[0]})
+    chain.sleep(vote_time + 10)
+    chain.mine(1)
+
+    # Vote release funds
+    dao.voteReleaseFundsSpendingProposal(proposal_id_1, False, {'from': accounts[0]})
+    dao.voteReleaseFundsSpendingProposal(proposal_id_1, True, {'from': accounts[1]})
+    dao.voteReleaseFundsSpendingProposal(proposal_id_1, True, {'from': accounts[2]})
+    
+    dao.voteReleaseFundsSpendingProposal(proposal_id_2, False, {'from': accounts[0]})
+    dao.voteReleaseFundsSpendingProposal(proposal_id_2, True, {'from': accounts[1]})
+    dao.voteReleaseFundsSpendingProposal(proposal_id_2, True, {'from': accounts[2]})
+    with reverts("You have already voted once"):
+        dao.voteReleaseFundsSpendingProposal(proposal_id_1, True, {'from': accounts[2]})
+    chain.sleep(vote_time + 10)
+    chain.mine(1)
+    with reverts("Voting period has ended"):
+        dao.voteReleaseFundsSpendingProposal(proposal_id_1, True, {'from': accounts[2]})
+    with reverts("No spending proposal exists with this id"):
+        dao.voteReleaseFundsSpendingProposal(1234, True, {'from': accounts[2]})
+    
+    # Withdraw proposal 1
+    dao.withdraw(proposal_id_1, {'from': recipient})
+
+    # Reserve funds proposal 2
+    assert dao.enoughFundsForProposal(proposal_id_2) == False
+    with reverts("Contract balnce too low. Use reserveFunds if you are the proposal recipient"):
+        dao.withdraw(proposal_id_2, {'from': recipient})
+    dao.reserveFunds(proposal_id_2, {'from': recipient})
+
+    # Reserve twice
+    with reverts('You have already reserved your funds'):
+        dao.reserveFunds(proposal_id_2, {'from': recipient})
+
+    # Reserve from wrong account 
+    with reverts('You are not the recipient'):
+        dao.withdraw(proposal_id_2, {'from': accounts[1]})
+
+    # Reserve funds wrong proposal
+    with reverts('No spending proposal exists with this id'):
+        dao.reserveFunds(123, {'from': accounts[0]})
+
+    # Fund and witdraw
+    dao.fund({'from': accounts[1], 'value': 1*10**18})
+    dao.withdraw(proposal_id_2, {'from': recipient})
+
 
 ####################
 # Governace update #
@@ -247,12 +320,22 @@ def test_governance_update(dao_with_3_members):
     )
     id = tx.return_value
 
+    with reverts("Voting peroid is not over"):
+        dao_with_3_members.implementGovProposal(id)
+
     dao_with_3_members.voteGovProposal(id, True, {'from': accounts[1]})
     dao_with_3_members.voteGovProposal(id, True, {'from': accounts[2]})
+    with reverts('No governance proposal exists with this id'):
+        dao_with_3_members.voteGovProposal(123, True, {'from': accounts[2]})
     chain.sleep(vote_time + 10)
     chain.mine(1)
     assert dao_with_3_members.govProposalPassed(id)[0] == True
     dao_with_3_members.implementGovProposal(id)
+    with reverts("No governance proposal exists with this id"):
+        dao_with_3_members.implementGovProposal(123)
+    with reverts("Governance proposal already implimented"):
+        dao_with_3_members.implementGovProposal(id)
+
 
     assert dao_with_3_members.quorum() == new_quorum
     assert dao_with_3_members.buyInFee() == new_buyInFee
@@ -260,22 +343,29 @@ def test_governance_update(dao_with_3_members):
     assert dao_with_3_members.periodFee() == new_periodFee
     assert dao_with_3_members.periodLength() == new_periodLength
 
+
 ##############    
 # Period Fee #
 ##############
 
 def test_pay_period_fee(dao):
+    # Pay too early
+    with reverts('You have already payed for this period'):
+        dao.payPeriodFee({'from': accounts[0], 'value': 1})
+
+    # Wait for two periods
     chain.sleep(2 * period_length + 100)
     chain.mine(1)
-    print((dao.nextPeriodStart() - dao.members(accounts[0])[1]) / period_length)
-    print('now', chain.time())
-    print('next', dao.nextPeriodStart())
-    print('payed', dao.members(accounts[0])[1])
     with reverts('Only active members can call this function'):
         dao.proposeSpending(1000, accounts[1], 'Test', {'from': accounts[0]})
-    tx = dao.payPeriodFee({'from': accounts[0], 'value': 2 * period_fee})
-    print(tx.events)
-    dao.proposeSpending(1000, accounts[1], 'Test', {'from': accounts[0]})
+
+    with reverts('Value does not equal required period fee'):
+        dao.payPeriodFee({'from': accounts[0], 'value': 1})
+
+    dao.payPeriodFee({'from': accounts[0], 'value': 2 * period_fee})
+
+    with reverts('You have already payed for this period'):
+        dao.payPeriodFee({'from': accounts[0], 'value': 1})
 
 def test_fund(dao):
     prev_balance = dao.balance() 
@@ -291,7 +381,17 @@ def test_fund(dao):
     assert prev_points + value == new_points
 
 
+###################
+# nextPeriodStart #
+###################
 
+def test_next_period(dao):
+    now = chain.time()
+    next_period = dao.nextPeriodStart()
+    diff = next_period - now
+    chain.sleep(diff)
+    print(chain.time())
+    print(dao.nextPeriodStart())
 
 
 
