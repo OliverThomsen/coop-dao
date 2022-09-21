@@ -288,10 +288,10 @@ contract DAO {
 
     // Withdraw funds for a spending proposal
     function withdraw(uint proposalId) external {
-        (bool canWithdraw, string memory errorMessage) = canWithdraw(proposalId);
-        require(canWithdraw == true, errorMessage);
-        require(enoughFundsForProposal(proposalId) == true, "Contract balnce too low. Use reserveFunds if you are the proposal recipient");
         SpendingProposal storage proposal = spendingProposals[proposalId];
+        (bool canWithdraw, string memory errorMessage) = canWithdraw(proposal);
+        require(canWithdraw == true, errorMessage);
+        require(enoughFundsForProposal(proposalId) == true, "Contract balance too low. Use reserveFunds if you are the proposal recipient");
 
         // Clear reserved funds for proposal
         if (proposal.hasReservedFunds) {
@@ -314,19 +314,18 @@ contract DAO {
 
     // Call this function if there are not enough funds to withdraw the proposal amount
     function reserveFunds(uint proposalId) public {
-        (bool canWithdraw, string memory errorMessage) = canWithdraw(proposalId);
-        require(canWithdraw == true, errorMessage);
         SpendingProposal storage proposal = spendingProposals[proposalId];
+        (bool canWithdraw, string memory errorMessage) = canWithdraw(proposal);
+        require(canWithdraw == true, errorMessage);
         require(proposal.hasReservedFunds == false, "You have already reserved your funds");
         proposal.hasReservedFunds = true;
         reservedFunds += proposal.amount;
     }
 
-    function canWithdraw(uint proposalId) internal view returns(bool, string memory) {
-        if (proposalId >= spendingProposalCount) {
+    function canWithdraw(SpendingProposal storage proposal) internal view returns(bool, string memory) {
+        if (proposal.exists == false) {
             return (false, "No spending proposal exists with this id");
         }
-        SpendingProposal storage proposal = spendingProposals[proposalId];
         if (proposal.recipient != msg.sender) {
             return (false, "You are not the recipient");
         }

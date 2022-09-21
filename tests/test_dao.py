@@ -276,7 +276,7 @@ def test_spending_proposal_reserve(dao_with_3_members):
 
     # Reserve funds proposal 2
     assert dao.enoughFundsForProposal(proposal_id_2) == False
-    with reverts("Contract balnce too low. Use reserveFunds if you are the proposal recipient"):
+    with reverts("Contract balance too low. Use reserveFunds if you are the proposal recipient"):
         dao.withdraw(proposal_id_2, {'from': recipient})
     dao.reserveFunds(proposal_id_2, {'from': recipient})
 
