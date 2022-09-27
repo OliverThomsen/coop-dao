@@ -149,13 +149,13 @@ def test_propose_spending_not_enough_funds(dao):
 def test_propose_spending(dao):
     # Arange 
     amount = 0.1 * 10**18
-    name = "spending 1"
+    description = "spending 1"
     recipient = accounts[1]
     proposal_count_before = dao.spendingProposalCount()
     id = proposal_count_before
     
     # Act
-    dao.proposeSpending(amount, recipient, name, {'from': accounts[0]})
+    dao.proposeSpending(amount, recipient, description, {'from': accounts[0]})
     proposal = dao.spendingProposals(id)
     initial_vote = proposal[7]
     final_vote = proposal[8]
@@ -163,7 +163,7 @@ def test_propose_spending(dao):
     # Assert
     assert proposal_count_before + 1 == dao.spendingProposalCount()
     assert proposal[0] == id
-    assert proposal[1] == name
+    assert proposal[1] == description
     assert proposal[2] == amount
     assert proposal[3] == recipient
     assert proposal[4] == True # proposal exists
@@ -184,9 +184,9 @@ def test_propose_spending(dao):
 def test_spending_proposal_flow_success(dao):
     # Arrange 
     amount = 0.1 * 10**18
-    name = "Spending Test"
+    description = "Spending Test"
     recipient = accounts[1]
-    tx = dao.proposeSpending(amount, recipient, name, {'from': accounts[0]})
+    tx = dao.proposeSpending(amount, recipient, description, {'from': accounts[0]})
     id = tx.return_value
 
     # Inital voting round
@@ -232,13 +232,13 @@ def test_spending_proposal_flow_success(dao):
 def test_spending_proposal_reserve(dao_with_3_members):
     dao = dao_with_3_members
     amount = 2 * 10**18
-    name = "Reserve Test"
+    description = "Reserve Test"
     recipient = accounts[3]
     
     # Create proposal
-    tx = dao.proposeSpending(amount, recipient, name, {'from': accounts[0]})
+    tx = dao.proposeSpending(amount, recipient, description, {'from': accounts[0]})
     proposal_id_1 = tx.return_value
-    tx = dao.proposeSpending(amount, recipient, name, {'from': accounts[0]})
+    tx = dao.proposeSpending(amount, recipient, description, {'from': accounts[0]})
     proposal_id_2 = tx.return_value
     
     # Vote on proposal

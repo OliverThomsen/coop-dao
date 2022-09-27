@@ -9,8 +9,8 @@ contract DAO {
 
     // Governance variables
     uint8 public quorum; // minimum percentage of active members required to participate in a vote
-    uint public buyInFee; // minimum fee to join the DAO
-    uint public voteTime; // amount of time in seconds you have, to vote on a proposal
+    uint public buyInFee; // fee to join the DAO
+    uint public voteTime; // amount of time in seconds you have to vote on a proposal
     uint public votingReward; // amount of points a member is rewarded for participating in a vote
     uint public periodFee; // fee you must pay every period to stay a member
     uint public periodLength; // amount of time between mandatory payments
@@ -18,7 +18,7 @@ contract DAO {
     // Members
     uint public memberCount = 0; // number of members that have joined the DAO
     mapping(address => Member) public members; // map of member ojects indexed by wallet address
-    mapping(uint => uint) public activeMembersInPeriod; // Keeps track of how many active members there is in a period (timestamp => activeMembers)
+    mapping(uint => uint) public activeMembersInPeriod; // Keeps track of how many active members there are in a period (timestamp => activeMembers)
    
     // Proposals
     uint public reservedFunds = 0; // total funds reseved for passed spending proposals
@@ -49,7 +49,7 @@ contract DAO {
 
     struct SpendingProposal {
         uint id; // derived form incrementing spendingProposalCount
-        string name; // name or description for proposal 
+        string description; // description of proposal 
         uint amount; // amount of funds to transfer to recipient 
         address payable recipient; // recieving address for the amount of funds
         bool exists; // always true once created otherwise false
@@ -183,12 +183,12 @@ contract DAO {
     }
 
     // Create a proposal to spend money
-    function proposeSpending(uint amount, address payable recipient, string memory name) external onlyActiveMembers returns(uint){
+    function proposeSpending(uint amount, address payable recipient, string memory description) external onlyActiveMembers returns(uint){
         require(availableFunds() >= amount, "Not enough funds");
         uint id = spendingProposalCount;
         spendingProposals[id] = SpendingProposal({
             id: id,
-            name: name,
+            description: description,
             amount: amount,
             recipient: recipient,
             exists: true,
